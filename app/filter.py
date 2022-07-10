@@ -3,11 +3,22 @@ from bs4 import BeautifulSoup
 from bs4.element import ResultSet, Tag
 from cryptography.fernet import Fernet
 from flask import render_template
+import urllib.parse as urlparse
+from urllib.parse import parse_qs
+import re
 
 from app.models.g_classes import GClasses
 from app.request import VALID_PARAMS, MAPS_URL
 from app.utils.misc import get_abs_url, read_config_bool
-from app.utils.results import *
+from app.utils.results import (
+    BLANK_B64, GOOG_IMG, GOOG_STATIC, G_M_LOGO_URL, LOGO_URL, SITE_ALTS,
+    has_ad_content, filter_link_args, append_anon_view, get_site_alt,
+)
+from app.models.endpoint import Endpoint
+from app.models.config import Config
+
+
+MAPS_ARGS = ['q', 'daddr']
 
 minimal_mode_sections = ['Top stories', 'Images', 'People also ask']
 unsupported_g_pages = [
@@ -34,6 +45,28 @@ def extract_q(q_str: str, href: str) -> str:
         str: The 'q' element of the link, or an empty string
     """
     return parse_qs(q_str)['q'][0] if ('&q=' in href or '?q=' in href) else ''
+
+
+def build_map_url(href: str) -> str:
+    """Tries to extract known args that explain the location in the url. If a
+    location is found, returns the default url with it. Otherwise, returns the
+    url unchanged.
+
+    Args:
+        href: The full url to check.
+
+    Returns:
+        str: The parsed url, or the url unchanged.
+    """
+    # parse the url
+    parsed_url = parse_qs(href)
+    # iterate through the known parameters and try build the url
+    for param in MAPS_ARGS:
+        if param in parsed_url:
+            return MAPS_URL + "?q=" + parsed_url[param][0]
+
+    # query could not be extracted returning unchanged url
+    return href
 
 
 def clean_query(query: str) -> str:
@@ -462,12 +495,10 @@ class Filter:
                 self._av.add(netloc)
                 append_anon_view(link, self.config)
 
-            if self.config.new_tab:
-                link['target'] = '_blank'
         else:
             if href.startswith(MAPS_URL):
                 # Maps links don't work if a site filter is applied
-                link['href'] = MAPS_URL + "?q=" + clean_query(q)
+                link['href'] = build_map_url(link['href'])
             elif (href.startswith('/?') or href.startswith('/search?') or
                   href.startswith('/imgres?')):
                 # make sure that tags can be clicked as relative URLs
@@ -481,6 +512,12 @@ class Filter:
                 return
             else:
                 link['href'] = href
+
+        if self.config.new_tab and (
+            link["href"].startswith("http")
+            or link["href"].startswith("imgres?")
+        ):
+            link["target"] = "_blank"
 
         # Replace link location if "alts" config is enabled
         if self.config.alts:
